@@ -13,7 +13,7 @@ export const LocationSection: React.FC = () => {
       desc: "Direct walk or quick auto-rickshaw connection from property.",
     },
     {
-      name: "Galgotias University",
+      name: "Galgotias College",
       time: "~ 8 MINS",
       desc: "Frequent student shuttles and direct transit connectivity.",
     },
