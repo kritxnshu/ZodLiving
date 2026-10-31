@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ZOD Living
 
-## Getting Started
+A website for ZOD Living, a student hostel in Greater Noida. The homepage is a scroll-driven walkthrough of the building: frames play on a canvas, loaded by a custom frame loader that keeps a limited cache, prioritizes key scenes and preloads in the direction you scroll. Visitors can browse room types with AC/Non-AC pricing, amenities, a photo gallery and the location, and contact the hostel on WhatsApp, by phone or by email. It's built with Next.js 16, React 19, TypeScript and Tailwind CSS v4 with no animation libraries, and all hostel details live in one config file, so prices and info can be updated without touching the UI.
 
-First, run the development server:
+## Run locally
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev     # http://localhost:3000
+npm run build   # production build
+npm run lint
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Deploying (Vercel)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Works with no configuration. Page titles, the sitemap, `robots.txt` and the share image use the project's production URL automatically.
+- Once there's a custom domain, set `NEXT_PUBLIC_SITE_URL` (e.g. `https://zodliving.in`) in the Vercel project's environment variables.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Where things live
 
-## Learn More
+| What | Where |
+|---|---|
+| Address, phone, prices, amenities | `src/lib/contact-config.ts` |
+| FAQ answers | `src/lib/faqs.ts` |
+| Page titles and descriptions for Google | `src/app/<page>/page.tsx` |
+| Page content | `src/components/pages/` |
+| Colours (one gold family) and fonts | `src/app/globals.css`, `src/app/layout.tsx` |
+| Hero scenes: text, keyframes, timing | `src/lib/scenes.ts` |
 
-To learn more about Next.js, take a look at the following resources:
+## Hero frames
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The hero plays 445 AVIF frames from `public/sequence/<version>/`, with a desktop set (1600×900) and a portrait set for phones (720×1080, cropped around each scene's subject). They're built from the original 1920×1080 PNGs in `frames-source/`, which is not committed:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run frames   # macOS only (uses sips)
+```
 
-## Deploy on Vercel
+The frames are cached by browsers for a year. Whenever they change, bump `VERSION` in `scripts/build-frames.sh` **and** `FRAME_VERSION` in `src/lib/frames.ts`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Not wired up yet
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The booking dialog and the contact form show a confirmation but don't send the enquiry anywhere yet. They're to be connected to Google Sheets.

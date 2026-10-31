@@ -2,11 +2,15 @@
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
-  FRAME_PATHS,
-  FRAME_WIDTH,
-  FRAME_HEIGHT,
+  AVIF_PROBE,
+  FRAME_SIZE,
+  MOBILE_MEDIA,
+  TOTAL_FRAMES,
+  framePath,
+  stillPath,
+  type FrameVariant,
 } from "@/lib/frames";
-import { ProgressiveFrameLoader } from "@/lib/frame-loader";
+import { FrameSequenceLoader, type FrameImage } from "@/lib/frame-loader";
 import {
   SCENE_MARKERS,
   progressToFrame,
@@ -19,29 +23,54 @@ interface CinematicScrollCanvasProps {
   className?: string;
 }
 
+const KEYFRAMES = SCENE_MARKERS.map((s) => s.keyframe);
+
+// Share of the remaining distance to the target frame covered per 60 Hz frame
+const EASE_PER_FRAME = 0.22;
+
+// Must cover the loader's decode window (24 ahead + 8 behind + current) plus the 5 keyframes
+const MAX_DECODED: Record<FrameVariant, number> = { desktop: 48, mobile: 40 };
+
+let avifSupport: Promise<boolean> | undefined;
+function supportsAvif() {
+  avifSupport ??= new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(img.naturalWidth > 0);
+    img.onerror = () => resolve(false);
+    img.src = AVIF_PROBE;
+  });
+  return avifSupport;
+}
+
+/** Show only the scene keyframes, without the camera motion between them. */
+function prefersStills() {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+  return (
+    connection?.saveData === true ||
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+function frameUrls(variant: FrameVariant, stills: boolean, avif: boolean) {
+  return Array.from({ length: TOTAL_FRAMES }, (_, i) => {
+    if (avif && !stills) return framePath(variant, i);
+    if (!KEYFRAMES.includes(i)) return null;
+    return avif ? framePath(variant, i) : stillPath(variant, i);
+  });
+}
+
 export const CinematicScrollCanvas: React.FC<CinematicScrollCanvasProps> = ({
   height = "700vh",
   onExploreMore,
   className = "",
 }) => {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const loaderRef = useRef<ProgressiveFrameLoader | null>(null);
+  const overlayRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Animation & Frame tracking refs
-  const currentFrameRef = useRef<number>(0);
-  const targetFrameRef = useRef<number>(0);
-  const lastRenderedIndexRef = useRef<number>(-1);
-  const isDirtyRef = useRef<boolean>(true);
-  const rafIdRef = useRef<number | null>(null);
-  const isReducedMotionRef = useRef<boolean>(false);
-  const lastScrollYRef = useRef<number>(0);
-  const scrollDirectionRef = useRef<1 | -1>(1);
-
-  // React state for overlay presentation
+  // Only the rare changes live in React state; per-frame updates are written straight to the DOM
   const [activeSceneNumber, setActiveSceneNumber] = useState<number | null>(1);
-  const [overlayOpacity, setOverlayOpacity] = useState<number>(1);
-  const [currentProgress, setCurrentProgress] = useState<number>(0);
+  const [isNearEnd, setIsNearEnd] = useState(false);
 
   // Smooth scroll to a specific scene checkpoint (via navigation pips)
   const jumpToScene = useCallback((sceneNumber: number) => {
@@ -77,264 +106,293 @@ export const CinematicScrollCanvas: React.FC<CinematicScrollCanvasProps> = ({
     }
   }, [activeSceneNumber, jumpToScene, onExploreMore]);
 
+  // Jump straight past the intro, without playing the whole sequence on the way
+  const skipIntro = useCallback(() => {
+    const section = containerRef.current;
+    if (!section) return;
+    window.scrollTo({ top: section.offsetTop + section.offsetHeight, behavior: "instant" });
+  }, []);
+
   useEffect(() => {
-    // 1. Accessibility: Check prefers-reduced-motion
-    const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    isReducedMotionRef.current = mediaQuery.matches;
-
-    const handleMotionPreference = (e: MediaQueryListEvent) => {
-      isReducedMotionRef.current = e.matches;
-      if (e.matches) {
-        currentFrameRef.current = targetFrameRef.current;
-        isDirtyRef.current = true;
-      }
-    };
-    mediaQuery.addEventListener("change", handleMotionPreference);
-
-    // 2. Initialize Progressive Frame Loader with pinned keyframes
-    const pinnedKeyframes = SCENE_MARKERS.map((s) => s.keyframe);
-    const loader = new ProgressiveFrameLoader(FRAME_PATHS, pinnedKeyframes, 140, 6);
-    loaderRef.current = loader;
-
-    const unsubscribe = loader.subscribe((loadedIndex: number) => {
-      const activeDisplay = Math.round(currentFrameRef.current);
-      if (
-        loadedIndex === activeDisplay ||
-        lastRenderedIndexRef.current === -1 ||
-        Math.abs(loadedIndex - activeDisplay) <= 1
-      ) {
-        isDirtyRef.current = true;
-      }
-    });
-
+    const section = containerRef.current;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const ctx = canvas?.getContext("2d", { alpha: false });
+    if (!section || !canvas || !ctx) return;
 
-    const ctx = canvas.getContext("2d", { alpha: false });
-    if (!ctx) return;
+    const mobileQuery = window.matchMedia(MOBILE_MEDIA);
+    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let variant: FrameVariant = mobileQuery.matches ? "mobile" : "desktop";
+    let stills = prefersStills();
+    let avif: boolean | null = null; // unknown until the probe answers
+    let loader: FrameSequenceLoader | null = null;
+    let unsubscribe = () => {};
+    let disposed = false;
 
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
+    let sectionTop = 0;
+    let scrollable = 1;
+    let target = 0; // frame the scroll position asks for (fractional during transitions)
+    let display = 0; // eased playhead chasing the target
+    let lastDrawn = -1; // frame on the canvas, -1 when blank
+    let direction: 1 | -1 = 1;
+    let lastScrollY = window.scrollY;
+    let lastTime = 0;
+    let rafId = 0;
+    let activeScene: number | null = 1;
+    let nearEnd = false;
+    const overlayOpacity: number[] = SCENE_MARKERS.map((_, i) => (i === 0 ? 1 : 0));
 
-    // 3. Retina / High-DPI buffer sizing (capped at 2.0 DPR)
-    const updateCanvasDimensions = () => {
-      if (!canvas) return;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const rect = canvas.getBoundingClientRect();
-      const displayWidth = Math.max(1, Math.round(rect.width * dpr));
-      const displayHeight = Math.max(1, Math.round(rect.height * dpr));
+    const progressAt = (scrollY: number) =>
+      Math.min(1, Math.max(0, (scrollY - sectionTop) / scrollable));
 
-      if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-        canvas.width = displayWidth;
-        canvas.height = displayHeight;
-        if (ctx) {
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = "high";
-        }
-        isDirtyRef.current = true;
+    const measure = () => {
+      const rect = section.getBoundingClientRect();
+      sectionTop = rect.top + window.scrollY;
+      scrollable = Math.max(1, rect.height - window.innerHeight);
+    };
+
+    // Cover-fit, centred, like object-fit: cover on the poster underneath
+    const draw = (image: FrameImage) => {
+      const iw = image instanceof HTMLImageElement ? image.naturalWidth : image.width;
+      const ih = image instanceof HTMLImageElement ? image.naturalHeight : image.height;
+      const scale = Math.max(canvas.width / iw, canvas.height / ih);
+      const sw = canvas.width / scale;
+      const sh = canvas.height / scale;
+      ctx.drawImage(image, (iw - sw) / 2, (ih - sh) / 2, sw, sh, 0, 0, canvas.width, canvas.height);
+      canvas.style.opacity = "1";
+    };
+
+    // The backing store holds only as many pixels as the visible part of the frame has, capped at the
+    // screen's density: drawing stays a ~1:1 copy and the browser scales the canvas up for free.
+    const sizeCanvas = () => {
+      const cssW = canvas.clientWidth;
+      const cssH = canvas.clientHeight;
+      if (!cssW || !cssH) return;
+      const { width, height } = FRAME_SIZE[variant];
+      const cover = Math.max(cssW / width, cssH / height);
+      const density = Math.min(window.devicePixelRatio || 1, 1 / cover);
+      const w = Math.round(cssW * density);
+      const h = Math.round(cssH * density);
+      if (canvas.width === w && canvas.height === h) return;
+
+      canvas.width = w;
+      canvas.height = h;
+      // Resizing clears the canvas: repaint now rather than flash black until the next frame
+      lastDrawn = -1;
+      const frame = loader?.getFrame(Math.round(display), -1);
+      if (frame) {
+        draw(frame.image);
+        lastDrawn = frame.index;
       }
     };
 
-    updateCanvasDimensions();
+    const updateOverlays = (progress: number) => {
+      const { activeSceneNumber: active, opacity } = getSceneOverlayState(progress);
+      SCENE_MARKERS.forEach((scene, i) => {
+        const el = overlayRefs.current[i];
+        const value = scene.number === active ? Math.round(opacity * 1000) / 1000 : 0;
+        if (!el || value === overlayOpacity[i]) return;
+        overlayOpacity[i] = value;
+        const visible = value > 0.02;
+        el.style.opacity = String(value);
+        el.style.transform = `translateY(${Math.round((1 - value) * 8)}px)`;
+        el.style.visibility = visible ? "visible" : "hidden";
+        el.setAttribute("aria-hidden", String(!visible));
+      });
 
-    // 4. Drawing routine with aspect-ratio preserving cover fit
-    const renderFrame = (img: HTMLImageElement) => {
-      if (!canvas || !ctx) return;
-      if (!img || !img.complete || img.naturalWidth === 0) return;
+      if (active !== activeScene) {
+        activeScene = active;
+        setActiveSceneNumber(active);
+      }
+      const end = progress > 0.92;
+      if (end !== nearEnd) {
+        nearEnd = end;
+        setIsNearEnd(end);
+      }
+    };
 
-      const canvasW = canvas.width;
-      const canvasH = canvas.height;
-      if (canvasW === 0 || canvasH === 0) return;
+    const requestTick = () => {
+      if (!rafId && !disposed) rafId = requestAnimationFrame(tick);
+    };
 
-      const imgW = img.naturalWidth || FRAME_WIDTH;
-      const imgH = img.naturalHeight || FRAME_HEIGHT;
-      const canvasAspect = canvasW / canvasH;
-      const imgAspect = imgW / imgH;
+    const tick = (now: number) => {
+      rafId = 0;
 
-      let sW = imgW;
-      let sH = imgH;
-      let sx = 0;
-      let sy = 0;
+      const scrollY = window.scrollY;
+      if (scrollY !== lastScrollY) {
+        direction = scrollY > lastScrollY ? 1 : -1;
+        lastScrollY = scrollY;
+      }
+      const progress = progressAt(scrollY);
+      const nextTarget = progressToFrame(progress);
+      if (nextTarget !== target) {
+        target = nextTarget;
+        loader?.setPlayhead(target, direction);
+      }
+      updateOverlays(progress);
 
-      if (canvasAspect > imgAspect) {
-        sH = imgW / canvasAspect;
-        sy = (imgH - sH) / 2;
+      if (stills) {
+        display = target;
       } else {
-        sW = imgH * canvasAspect;
-        sx = (imgW - sW) / 2;
+        // Frame-rate independent, so it feels the same at 60 Hz and 120 Hz
+        const dt = lastTime ? Math.min(now - lastTime, 100) : 1000 / 60;
+        display += (target - display) * (1 - Math.pow(1 - EASE_PER_FRAME, dt / (1000 / 60)));
+        if (Math.abs(target - display) < 0.05) display = target;
       }
 
-      ctx.drawImage(img, sx, sy, sW, sH, 0, 0, canvasW, canvasH);
-    };
-
-    // 5. Scroll calculation: maps continuous native scroll to frame & overlay state
-    const updateScrollState = () => {
-      const container = containerRef.current;
-      if (!container) return;
-
-      const rect = container.getBoundingClientRect();
-      const viewportHeight = window.innerHeight;
-      const scrollY = window.scrollY || window.pageYOffset;
-
-      if (scrollY > lastScrollYRef.current) {
-        scrollDirectionRef.current = 1;
-      } else if (scrollY < lastScrollYRef.current) {
-        scrollDirectionRef.current = -1;
-      }
-      lastScrollYRef.current = scrollY;
-
-      const totalScrollableDistance = rect.height - viewportHeight;
-      const currentScrollWithinSection = -rect.top;
-
-      let p = 0;
-      if (totalScrollableDistance > 0) {
-        p = currentScrollWithinSection / totalScrollableDistance;
-      }
-      const clampedP = Math.max(0, Math.min(1, p));
-      setCurrentProgress(clampedP);
-
-      // Continuous transfer function maps progress to frame with natural plateaus
-      const newTarget = progressToFrame(clampedP);
-      if (newTarget !== targetFrameRef.current) {
-        targetFrameRef.current = newTarget;
-        isDirtyRef.current = true;
-
-        loader.updatePriority(
-          Math.round(newTarget),
-          scrollDirectionRef.current
-        );
+      const wanted = Math.round(display);
+      if (loader && wanted !== lastDrawn) {
+        // Stills cut to the nearest scene; the sequence never steps back against the scroll
+        const frame = loader.getFrame(wanted, stills ? -1 : lastDrawn);
+        if (frame && frame.index !== lastDrawn) {
+          draw(frame.image);
+          lastDrawn = frame.index;
+        }
       }
 
-      // Check text visibility at checkpoints
-      const { activeSceneNumber: sceneNum, opacity } = getSceneOverlayState(clampedP);
-      setActiveSceneNumber(sceneNum);
-      setOverlayOpacity(opacity);
-    };
-
-    updateScrollState();
-
-    // 6. Animation tick with smooth interpolation
-    const interpolationFactor = 0.22;
-
-    const tick = () => {
-      if (isReducedMotionRef.current) {
-        currentFrameRef.current = targetFrameRef.current;
+      // Run only while easing. Scrolling, resizing and newly decoded frames restart the loop, so it
+      // costs nothing once the hero is settled or scrolled out of view.
+      if (display !== target) {
+        lastTime = now;
+        requestTick();
       } else {
-        const delta = targetFrameRef.current - currentFrameRef.current;
-        if (Math.abs(delta) < 0.05) {
-          currentFrameRef.current = targetFrameRef.current;
-        } else {
-          currentFrameRef.current += delta * interpolationFactor;
-          isDirtyRef.current = true;
-        }
+        lastTime = 0;
       }
-
-      const displayIndex = Math.round(currentFrameRef.current);
-
-      if (isDirtyRef.current || displayIndex !== lastRenderedIndexRef.current) {
-        const img = loader.getClosestLoaded(displayIndex);
-        if (img) {
-          renderFrame(img);
-          lastRenderedIndexRef.current = displayIndex;
-          isDirtyRef.current = false;
-        }
-      }
-
-      rafIdRef.current = requestAnimationFrame(tick);
     };
 
-    rafIdRef.current = requestAnimationFrame(tick);
-
-    // 7. Event listeners (pure native scrolling, zero timer interference)
-    const handleScroll = () => {
-      updateScrollState();
+    const startLoader = () => {
+      if (avif === null) return;
+      unsubscribe();
+      loader?.destroy();
+      loader = new FrameSequenceLoader(frameUrls(variant, stills, avif), {
+        pinned: KEYFRAMES,
+        maxDecoded: MAX_DECODED[variant],
+      });
+      unsubscribe = loader.subscribe(requestTick);
+      loader.setPlayhead(target, direction);
+      lastDrawn = -1;
+      requestTick();
     };
 
-    const handleResize = () => {
-      updateCanvasDimensions();
-      updateScrollState();
+    const onScroll = () => requestTick();
+    const onResize = () => {
+      measure();
+      sizeCanvas();
+      requestTick();
+    };
+    const onVariantChange = () => {
+      variant = mobileQuery.matches ? "mobile" : "desktop";
+      sizeCanvas();
+      startLoader();
+    };
+    const onMotionChange = () => {
+      stills = prefersStills();
+      startLoader();
     };
 
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    window.addEventListener("resize", handleResize, { passive: true });
+    measure();
+    sizeCanvas();
+    // The page may open part-way down (reload, back button)
+    target = display = progressToFrame(progressAt(window.scrollY));
 
-    const resizeObserver = new ResizeObserver(() => {
-      handleResize();
+    void supportsAvif().then((supported) => {
+      if (disposed) return;
+      avif = supported;
+      startLoader();
     });
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onResize, { passive: true });
+    mobileQuery.addEventListener("change", onVariantChange);
+    motionQuery.addEventListener("change", onMotionChange);
+    const resizeObserver = new ResizeObserver(onResize);
+    resizeObserver.observe(section);
+    requestTick();
 
     return () => {
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-      }
-      window.removeEventListener("scroll", handleScroll);
-      window.removeEventListener("resize", handleResize);
-      mediaQuery.removeEventListener("change", handleMotionPreference);
+      disposed = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onResize);
+      mobileQuery.removeEventListener("change", onVariantChange);
+      motionQuery.removeEventListener("change", onMotionChange);
       resizeObserver.disconnect();
       unsubscribe();
-      loader.destroy();
+      loader?.destroy();
     };
   }, []);
 
   return (
     <section
       ref={containerRef}
+      id="experience" // the header waits for this section's end before showing its links
       style={{ height }}
-      className={`relative w-full bg-black ${className}`}
+      // pb-10: a strip of black after the pinned frames for the next section's rounded top to rise over
+      className={`relative w-full bg-black pb-10 ${className}`}
       aria-label="ZOD Living Cinematic Experience"
     >
       {/* Pinned Viewport Container */}
-      <div className="sticky top-0 h-screen w-full overflow-hidden bg-black select-none">
+      <div className="hero-viewport sticky top-0 w-full overflow-hidden bg-black select-none">
+        {/* First frame as plain HTML, so it shows before JavaScript runs; the canvas covers it once drawing */}
+        <picture>
+          <source media={MOBILE_MEDIA} type="image/avif" srcSet={framePath("mobile", 0)} />
+          <source media={MOBILE_MEDIA} srcSet={stillPath("mobile", 0)} />
+          <source type="image/avif" srcSet={framePath("desktop", 0)} />
+          <img
+            src={stillPath("desktop", 0)}
+            alt=""
+            fetchPriority="high"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        </picture>
+
         {/* Main GPU Canvas */}
         <canvas
           ref={canvasRef}
           role="img"
           aria-label="Cinematic architectural sequence scroll animation"
-          className="absolute inset-0 block h-full w-full object-cover"
+          className="absolute inset-0 block h-full w-full"
+          style={{ opacity: 0 }}
         />
 
         {/* Cinematic Vignette */}
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/30" />
         <div className="pointer-events-none absolute inset-0 bg-radial-[at_center_center] from-transparent via-transparent to-black/50" />
 
-        {/* Five Scene Text Overlays (Rendered at exact checkpoints, hidden during transit) */}
-        {SCENE_MARKERS.map((scene) => {
-          const isThisScene = activeSceneNumber === scene.number;
-          const currentOpacity = isThisScene ? overlayOpacity : 0;
-          const isVisible = currentOpacity > 0.02;
+        {/* Five Scene Text Overlays (shown at checkpoints, hidden during transit; driven from the scroll loop) */}
+        {SCENE_MARKERS.map((scene, i) => (
+          <div
+            key={scene.id}
+            ref={(el) => {
+              overlayRefs.current[i] = el;
+            }}
+            // Phones: centred at the bottom for every scene, matching the centred frame crop.
+            // From sm up: each scene's own placement.
+            className={`pointer-events-none absolute z-20 flex flex-col max-w-[440px] px-6 sm:px-0 transition-transform duration-300 ease-out inset-x-0 mx-auto bottom-[14%] items-center text-center sm:inset-x-auto sm:mx-0 ${
+              scene.placement.desktopContainerClass
+            }`}
+            style={{
+              opacity: i === 0 ? 1 : 0,
+              transform: `translateY(${i === 0 ? 0 : 8}px)`,
+              visibility: i === 0 ? "visible" : "hidden",
+            }}
+            aria-hidden={i !== 0}
+          >
+            {/* Eyebrow */}
+            <span className="cinematic-shadow tracking-[0.24em] text-xs sm:text-[13px] font-semibold uppercase text-gold mb-2 sm:mb-3">
+              {scene.eyebrow}
+            </span>
 
-          return (
-            <div
-              key={scene.id}
-              className={`pointer-events-none absolute z-20 flex flex-col max-w-[440px] px-6 sm:px-0 transition-transform duration-300 ease-out ${
-                scene.placement.desktopContainerClass
-              }`}
-              style={{
-                opacity: currentOpacity,
-                transform: `translateY(${Math.round((1 - currentOpacity) * 8)}px)`,
-                visibility: isVisible ? "visible" : "hidden",
-              }}
-              aria-hidden={!isVisible}
-            >
-              {/* Eyebrow */}
-              <span className="cinematic-shadow tracking-[0.24em] text-xs sm:text-[13px] font-semibold uppercase text-[#D4AF37] mb-2 sm:mb-3">
-                {scene.eyebrow}
-              </span>
+            {/* Heading */}
+            <h2 className="cinematic-shadow text-3xl sm:text-4xl md:text-5xl font-light tracking-tight text-[#FBFBFA] leading-[1.12]">
+              {scene.heading}
+            </h2>
 
-              {/* Heading */}
-              <h2 className="cinematic-shadow text-3xl sm:text-4xl md:text-5xl font-light tracking-tight text-[#FBFBFA] leading-[1.12]">
-                {scene.heading}
-              </h2>
-
-              {/* Supporting text */}
-              <p className="cinematic-shadow text-sm sm:text-base md:text-lg text-neutral-300 font-normal leading-relaxed mt-2 sm:mt-3">
-                {scene.supportingText}
-              </p>
-            </div>
-          );
-        })}
+            {/* Supporting text */}
+            <p className="cinematic-shadow text-sm sm:text-base md:text-lg text-neutral-300 font-normal leading-relaxed mt-2 sm:mt-3">
+              {scene.supportingText}
+            </p>
+          </div>
+        ))}
 
         {/* Scene Navigation Rail (Pips) */}
         <nav
@@ -347,14 +405,14 @@ export const CinematicScrollCanvas: React.FC<CinematicScrollCanvasProps> = ({
               <button
                 key={scene.id}
                 onClick={() => jumpToScene(scene.number)}
-                className="group flex items-center gap-3 py-1 cursor-pointer focus:outline-none"
+                className="group flex items-center gap-3 py-1 cursor-pointer"
                 aria-label={`Jump to Scene ${scene.number}: ${scene.label}`}
                 title={scene.label}
               >
                 <span
                   className={`text-[11px] font-mono tracking-widest uppercase transition-all duration-300 ${
                     isActive
-                      ? "text-[#D4AF37] opacity-100 translate-x-0"
+                      ? "text-gold opacity-100 translate-x-0"
                       : "text-neutral-400 opacity-0 group-hover:opacity-100 translate-x-1 group-hover:translate-x-0"
                   } hidden sm:inline-block`}
                 >
@@ -363,7 +421,7 @@ export const CinematicScrollCanvas: React.FC<CinematicScrollCanvasProps> = ({
                 <div
                   className={`transition-all duration-300 rounded-full ${
                     isActive
-                      ? "h-2.5 w-2.5 bg-[#D4AF37] shadow-[0_0_10px_#D4AF37]"
+                      ? "h-2.5 w-2.5 bg-gold shadow-[0_0_10px_#D4AF37]"
                       : "h-1.5 w-1.5 bg-white/30 group-hover:bg-white/80 group-hover:scale-125"
                   }`}
                 />
@@ -372,24 +430,30 @@ export const CinematicScrollCanvas: React.FC<CinematicScrollCanvasProps> = ({
           })}
         </nav>
 
+        {/* Skip the intro (top right on phones, clear of the scroll prompter; bottom right on desktop) */}
+        <button
+          type="button"
+          onClick={skipIntro}
+          className={`absolute right-4 top-20 sm:top-auto sm:bottom-8 sm:right-10 z-30 rounded-full border border-white/20 bg-black/30 px-4 py-2 text-[11px] font-mono uppercase tracking-[0.2em] text-neutral-200 backdrop-blur-md transition-[opacity,color,border-color] duration-300 cursor-pointer hover:border-gold/60 hover:text-gold ${
+            isNearEnd ? "pointer-events-none opacity-0" : "opacity-100"
+          }`}
+          tabIndex={isNearEnd ? -1 : undefined}
+        >
+          Skip intro ↓
+        </button>
+
         {/* Minimalist Bottom Scroll Prompter */}
         <div className="absolute bottom-6 sm:bottom-8 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center">
           <button
             onClick={handleNextClick}
-            className="group flex flex-col items-center gap-2 cursor-pointer focus:outline-none"
-            aria-label={
-              currentProgress > 0.92
-                ? "Explore ZOD Living suites"
-                : "Scroll to continue"
-            }
+            className="group flex flex-col items-center gap-2 cursor-pointer"
+            aria-label={isNearEnd ? "Explore ZOD Living suites" : "Scroll to continue"}
           >
-            <span className="cinematic-shadow text-[11px] sm:text-xs font-mono tracking-[0.25em] uppercase text-neutral-300 group-hover:text-[#D4AF37] transition-colors">
-              {currentProgress > 0.92
-                ? "Explore ZOD Living ↓"
-                : "Scroll to Experience"}
+            <span className="cinematic-shadow text-[11px] sm:text-xs font-mono tracking-[0.25em] uppercase text-neutral-300 group-hover:text-gold transition-colors">
+              {isNearEnd ? "Explore ZOD Living ↓" : "Scroll to Experience"}
             </span>
-            <div className="h-6 w-3.5 border border-white/25 rounded-full flex justify-center p-0.5 group-hover:border-[#D4AF37]/60 transition-colors">
-              <div className="h-1.5 w-1 bg-[#D4AF37] rounded-full animate-bounce" />
+            <div className="h-6 w-3.5 border border-white/25 rounded-full flex justify-center p-0.5 group-hover:border-gold/60 transition-colors">
+              <div className="h-1.5 w-1 bg-gold rounded-full animate-bounce" />
             </div>
           </button>
         </div>

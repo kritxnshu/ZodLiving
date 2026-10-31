@@ -31,10 +31,10 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
           {/* Restrained dark overlay for high contrast */}
           <div className="absolute inset-0 bg-[#0A0F1D]/85 backdrop-blur-[2px]" />
 
-          <div className="relative z-10 max-w-4xl mx-auto text-center flex flex-col items-center">
+          <div className="relative z-10 max-w-4xl mx-auto text-center flex flex-col items-center" data-reveal>
             <div className="flex items-center justify-center gap-2 mb-4">
-              <span className="h-0.5 w-4 bg-[#F59E0B] rounded-full" />
-              <span className="text-xs font-mono tracking-[0.25em] uppercase text-[#F59E0B] font-semibold">
+              <span className="h-0.5 w-4 bg-gold rounded-full" />
+              <span className="text-xs font-mono tracking-[0.25em] uppercase text-gold font-semibold">
                 ACADEMIC SESSION {PROPERTY_CONFIG.academicYear}
               </span>
             </div>
@@ -52,14 +52,14 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
               {onOpenBooking ? (
                 <button
                   onClick={onOpenBooking}
-                  className="w-full sm:w-auto px-9 py-3.5 rounded-full bg-[#F59E0B] hover:bg-[#D97706] text-slate-950 text-xs font-mono uppercase tracking-widest font-semibold transition-all duration-200 cursor-pointer shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:shadow-lg"
+                  className="w-full sm:w-auto px-9 py-3.5 rounded-full bg-gold hover:bg-gold-light text-slate-950 text-xs font-mono uppercase tracking-widest font-semibold transition-all duration-200 cursor-pointer shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:shadow-lg"
                 >
                   Book a Visit
                 </button>
               ) : (
                 <Link
                   href="/contact"
-                  className="w-full sm:w-auto px-9 py-3.5 rounded-full bg-[#F59E0B] hover:bg-[#D97706] text-slate-950 text-xs font-mono uppercase tracking-widest font-semibold transition-all duration-200 cursor-pointer shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:shadow-lg text-center"
+                  className="w-full sm:w-auto px-9 py-3.5 rounded-full bg-gold hover:bg-gold-light text-slate-950 text-xs font-mono uppercase tracking-widest font-semibold transition-all duration-200 cursor-pointer shadow-[0_0_25px_rgba(245,158,11,0.3)] hover:shadow-lg text-center"
                 >
                   Book a Visit
                 </Link>
@@ -92,9 +92,9 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
           <div className="lg:col-span-4">
             <Link
               href="/"
-              className="flex items-center gap-2.5 text-lg font-light tracking-[0.2em] uppercase text-white hover:text-[#F59E0B] transition-colors"
+              className="flex items-center gap-2.5 text-lg font-light tracking-[0.2em] uppercase text-white hover:text-gold transition-colors"
             >
-              <span className="h-2 w-2 rounded-full bg-[#F59E0B] shadow-[0_0_8px_#F59E0B]" />
+              <span className="h-2 w-2 rounded-full bg-gold shadow-[0_0_8px_#D4AF37]" />
               <span className="font-semibold tracking-[0.25em]">ZOD</span> LIVING
             </Link>
 
@@ -146,27 +146,27 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
             </h4>
             <ul className="space-y-2.5 text-xs text-slate-400 font-mono tracking-wider">
               <li>
-                <Link href="/" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/" className="hover:text-gold transition-colors">
                   Experience
                 </Link>
               </li>
               <li>
-                <Link href="/room" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/room" className="hover:text-gold transition-colors">
                   Rooms & Fees
                 </Link>
               </li>
               <li>
-                <Link href="/amenities" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/amenities" className="hover:text-gold transition-colors">
                   Amenities
                 </Link>
               </li>
               <li>
-                <Link href="/life-at-zod" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/life-at-zod" className="hover:text-gold transition-colors">
                   Life at ZOD
                 </Link>
               </li>
               <li>
-                <Link href="/contact" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/contact" className="hover:text-gold transition-colors">
                   Contact & Visit
                 </Link>
               </li>
@@ -180,27 +180,27 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
             </h4>
             <ul className="space-y-2.5 text-xs text-slate-400 font-mono tracking-wider">
               <li>
-                <Link href="/room#2-seater" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/room#2-seater" className="hover:text-gold transition-colors">
                   2-Seater AC (₹1,65,000)
                 </Link>
               </li>
               <li>
-                <Link href="/room#2-seater" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/room#2-seater" className="hover:text-gold transition-colors">
                   2-Seater Non-AC (₹1,50,000)
                 </Link>
               </li>
               <li>
-                <Link href="/room#3-seater" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/room#3-seater" className="hover:text-gold transition-colors">
                   3-Seater AC (₹1,50,000)
                 </Link>
               </li>
               <li>
-                <Link href="/room#3-seater" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/room#3-seater" className="hover:text-gold transition-colors">
                   3-Seater Non-AC (₹1,35,000)
                 </Link>
               </li>
               <li>
-                <Link href="/room#comparison" className="hover:text-[#F59E0B] transition-colors">
+                <Link href="/room#comparison" className="hover:text-gold transition-colors">
                   Compare All Configurations
                 </Link>
               </li>
@@ -219,7 +219,7 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
                   href={PROPERTY_CONFIG.googleMapsUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[#F59E0B] hover:underline inline-flex items-center gap-1"
+                  className="text-gold hover:underline inline-flex items-center gap-1"
                 >
                   Get Directions on Google Maps ↗
                 </a>
@@ -228,7 +228,7 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
                 Phone:{" "}
                 <a
                   href={`tel:${PROPERTY_CONFIG.phoneRaw}`}
-                  className="text-white font-bold hover:text-[#F59E0B] transition-colors"
+                  className="text-white font-bold hover:text-gold transition-colors"
                 >
                   {PROPERTY_CONFIG.phone}
                 </a>
@@ -248,7 +248,7 @@ export const FooterCTASection: React.FC<FooterCTASectionProps> = ({
                 Email:{" "}
                 <a
                   href={`mailto:${PROPERTY_CONFIG.email}`}
-                  className="text-slate-300 hover:text-[#F59E0B] transition-colors"
+                  className="text-slate-300 hover:text-gold transition-colors"
                 >
                   {PROPERTY_CONFIG.email}
                 </a>

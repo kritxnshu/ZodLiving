@@ -54,8 +54,8 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           /* Room Comparison Mode */
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <span className="h-0.5 w-4 bg-[#D97706] rounded-full" />
-              <span className="text-xs font-mono tracking-widest uppercase text-[#D97706] font-semibold">
+              <span className="h-0.5 w-4 bg-gold rounded-full" />
+              <span className="text-xs font-mono tracking-widest uppercase text-gold-deep font-semibold">
                 ROOM COMPARISON
               </span>
             </div>
@@ -69,7 +69,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             <div className="mt-8 border border-slate-200 rounded-2xl overflow-hidden text-xs sm:text-sm">
               <div className="grid grid-cols-3 bg-slate-50 p-4 font-bold text-slate-900 border-b border-slate-200">
                 <div>Feature</div>
-                <div className="text-center text-[#D97706]">2-Seater Premium</div>
+                <div className="text-center text-gold-deep">2-Seater Premium</div>
                 <div className="text-center text-[#0A1128]">3-Seater Classic</div>
               </div>
 
@@ -100,7 +100,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
             <div className="mt-8 flex justify-end">
               <button
                 onClick={onClose}
-                className="px-6 py-2.5 rounded-full bg-[#F59E0B] text-slate-950 font-semibold text-xs font-mono uppercase tracking-wider hover:bg-[#D97706]"
+                className="px-6 py-2.5 rounded-full bg-gold text-slate-950 font-semibold text-xs font-mono uppercase tracking-wider hover:bg-gold-light"
               >
                 Close Comparison
               </button>
@@ -126,7 +126,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                   setFormSubmitted(false);
                   onClose();
                 }}
-                className="px-6 py-2.5 rounded-full bg-[#F59E0B] text-slate-950 font-semibold text-xs font-mono uppercase tracking-wider hover:bg-[#D97706]"
+                className="px-6 py-2.5 rounded-full bg-gold text-slate-950 font-semibold text-xs font-mono uppercase tracking-wider hover:bg-gold-light"
               >
                 Done
               </button>
@@ -136,8 +136,8 @@ export const BookingModal: React.FC<BookingModalProps> = ({
           /* Booking / Tour Reservation Form */
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <span className="h-0.5 w-4 bg-[#D97706] rounded-full" />
-              <span className="text-xs font-mono tracking-widest uppercase text-[#D97706] font-semibold">
+              <span className="h-0.5 w-4 bg-gold rounded-full" />
+              <span className="text-xs font-mono tracking-widest uppercase text-gold-deep font-semibold">
                 SCHEDULE A TOUR
               </span>
             </div>
@@ -160,7 +160,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                     placeholder="e.g. Aryan Sharma"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-[#D97706]"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-gold-deep focus:ring-4 focus:ring-gold/15"
                   />
                 </div>
 
@@ -174,7 +174,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                     placeholder="+91 98765 43210"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-[#D97706]"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-gold-deep focus:ring-4 focus:ring-gold/15"
                   />
                 </div>
               </div>
@@ -190,7 +190,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                     placeholder="aryan@university.edu"
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-[#D97706]"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-gold-deep focus:ring-4 focus:ring-gold/15"
                   />
                 </div>
 
@@ -201,7 +201,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                   <select
                     value={formData.roomType}
                     onChange={(e) => setFormData({ ...formData, roomType: e.target.value })}
-                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-[#D97706] bg-white text-slate-900"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-gold-deep focus:ring-4 focus:ring-gold/15 bg-white text-slate-900"
                   >
                     <option value="2-Seater AC">2-Seater AC — ₹1,65,000 / session</option>
                     <option value="2-Seater Non-AC">2-Seater Non-AC — ₹1,50,000 / session</option>
@@ -220,7 +220,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                   type="date"
                   value={formData.preferredDate}
                   onChange={(e) => setFormData({ ...formData, preferredDate: e.target.value })}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-[#D97706]"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-gold-deep focus:ring-4 focus:ring-gold/15"
                 />
               </div>
 
@@ -233,7 +233,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                   placeholder="e.g. Enquiring for B.Tech admission at GL Bajaj / Bennett..."
                   value={formData.notes}
                   onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-[#D97706] resize-none"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:border-gold-deep focus:ring-4 focus:ring-gold/15 resize-none"
                 />
               </div>
 
@@ -247,7 +247,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="px-7 py-2.5 rounded-full bg-[#F59E0B] hover:bg-[#D97706] text-slate-950 text-xs font-mono uppercase tracking-widest font-semibold transition-all shadow-md"
+                  className="px-7 py-2.5 rounded-full bg-gold hover:bg-gold-light text-slate-950 text-xs font-mono uppercase tracking-widest font-semibold transition-all shadow-md"
                 >
                   Submit Booking Request →
                 </button>

@@ -1,12 +1,9 @@
 export interface ScenePlacement {
   /**
-   * Tailwind utility classes for container positioning on desktop
+   * Tailwind utility classes positioning the text from the `sm` breakpoint up, so every class needs
+   * the `sm:` prefix. Below it (phones) all scenes share a centred layout set in CinematicScrollCanvas.
    */
   desktopContainerClass: string;
-  /**
-   * Tailwind utility classes for container positioning on mobile
-   */
-  mobileContainerClass: string;
   /**
    * Text alignment
    */
@@ -26,6 +23,9 @@ export interface SceneMarker {
   placement: ScenePlacement;
 }
 
+// Keyframes are indices into the frame sequence (src/lib/frames.ts) and must match SCENES in
+// scripts/build-frames.sh. Each transition's share of the scroll (gap between one pEnd and the next
+// pStart) is proportional to the number of frames it crosses, so every transition plays at the same speed.
 export const SCENE_MARKERS: readonly SceneMarker[] = [
   {
     id: "scene-1",
@@ -38,8 +38,7 @@ export const SCENE_MARKERS: readonly SceneMarker[] = [
     heading: "A place to feel at home.",
     supportingText: "Comfort begins the moment you arrive.",
     placement: {
-      desktopContainerClass: "left-[8%] bottom-[15%] text-left items-start",
-      mobileContainerClass: "left-[6%] bottom-[12%] text-left items-start",
+      desktopContainerClass: "sm:left-[8%] sm:bottom-[15%] sm:text-left sm:items-start",
       align: "left",
     },
   },
@@ -47,15 +46,14 @@ export const SCENE_MARKERS: readonly SceneMarker[] = [
     id: "scene-2",
     number: 2,
     label: "Lobby",
-    keyframe: 234,
-    pStart: 0.26,
-    pEnd: 0.34,
+    keyframe: 117,
+    pStart: 0.229,
+    pEnd: 0.309,
     eyebrow: "MORE THAN A PLACE TO STAY",
     heading: "Come home to ZOD.",
     supportingText: "Stay. Relax. Unwind.",
     placement: {
-      desktopContainerClass: "left-1/2 -translate-x-1/2 bottom-[11%] text-center items-center",
-      mobileContainerClass: "left-1/2 -translate-x-1/2 bottom-[10%] text-center items-center",
+      desktopContainerClass: "sm:left-1/2 sm:-translate-x-1/2 sm:bottom-[11%] sm:text-center sm:items-center",
       align: "center",
     },
   },
@@ -63,15 +61,14 @@ export const SCENE_MARKERS: readonly SceneMarker[] = [
     id: "scene-3",
     number: 3,
     label: "Reception",
-    keyframe: 438,
-    pStart: 0.54,
-    pEnd: 0.62,
+    keyframe: 219,
+    pStart: 0.456,
+    pEnd: 0.536,
     eyebrow: "THOUGHTFUL HOSPITALITY",
     heading: "Every detail, considered.",
     supportingText: "A warm welcome. A smoother everyday.",
     placement: {
-      desktopContainerClass: "left-[8%] bottom-[14%] text-left items-start",
-      mobileContainerClass: "left-[6%] bottom-[12%] text-left items-start",
+      desktopContainerClass: "sm:left-[8%] sm:bottom-[14%] sm:text-left sm:items-start",
       align: "left",
     },
   },
@@ -79,15 +76,14 @@ export const SCENE_MARKERS: readonly SceneMarker[] = [
     id: "scene-4",
     number: 4,
     label: "Double Sharing",
-    keyframe: 666,
-    pStart: 0.78,
-    pEnd: 0.86,
+    keyframe: 333,
+    pStart: 0.701,
+    pEnd: 0.781,
     eyebrow: "DOUBLE SHARING",
     heading: "Your space. Your comfort.",
     supportingText: "Room to rest, recharge, and focus.",
     placement: {
-      desktopContainerClass: "right-[8%] bottom-[14%] text-right items-end",
-      mobileContainerClass: "right-[6%] bottom-[12%] text-right items-end",
+      desktopContainerClass: "sm:right-[8%] sm:bottom-[14%] sm:text-right sm:items-end",
       align: "right",
     },
   },
@@ -95,15 +91,14 @@ export const SCENE_MARKERS: readonly SceneMarker[] = [
     id: "scene-5",
     number: 5,
     label: "Triple Sharing",
-    keyframe: 886,
+    keyframe: 443,
     pStart: 0.94,
     pEnd: 1.00,
     eyebrow: "SHARED LIVING",
     heading: "Better together.",
     supportingText: "Shared spaces. Room to grow.",
     placement: {
-      desktopContainerClass: "left-[8%] bottom-[15%] text-left items-start",
-      mobileContainerClass: "left-[6%] bottom-[12%] text-left items-start",
+      desktopContainerClass: "sm:left-[8%] sm:bottom-[15%] sm:text-left sm:items-start",
       align: "left",
     },
   },
@@ -115,7 +110,7 @@ function smoothstep(min: number, max: number, value: number): number {
 }
 
 /**
- * Maps scroll progress (0..1) to target frame index (0..889) continuously,
+ * Maps scroll progress (0..1) to target frame index (0..TOTAL_FRAMES-1) continuously,
  * with natural plateaus at the five checkpoints.
  */
 export function progressToFrame(p: number): number {

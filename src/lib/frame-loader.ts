@@ -1,317 +1,241 @@
 /**
- * High-performance Progressive Frame Loader with LRU Texture Eviction,
- * Concurrency Throttling, Keyframe Pinning, and Directional Priority Preloading.
+ * Streams the hero image sequence in two layers:
+ *
+ * - Files: every frame is fetched once and kept in memory as a Blob URL. The whole sequence is only
+ *   ~15–25 MB, so once the frames around the playhead are in, the rest download in the background.
+ * - Bitmaps: only frames near the playhead are decoded, and at most `maxDecoded` are kept (a decoded
+ *   1600×900 frame is ~5.8 MB), so memory stays bounded even on phones.
+ *
+ * Both queues are ordered around the playhead, favouring the direction the visitor is scrolling.
  */
 
-export class ProgressiveFrameLoader {
-  private urls: readonly string[];
-  private cache = new Map<number, HTMLImageElement>();
-  private loadingSet = new Set<number>();
-  private failedSet = new Set<number>();
-  private loadQueue: number[] = [];
-  private activeLoads = 0;
-  private maxCacheSize: number;
-  private maxConcurrent: number;
-  private pinnedIndices = new Set<number>([0]);
-  private onFrameReadyCallbacks: Array<(index: number) => void> = [];
+export type FrameImage = ImageBitmap | HTMLImageElement;
+
+interface LoaderOptions {
+  /** Frames to fetch and decode early and never evict, e.g. scene keyframes. */
+  pinned?: readonly number[];
+  maxDecoded?: number;
+  fetchConcurrency?: number;
+  decodeConcurrency?: number;
+}
+
+const DECODE_AHEAD = 24;
+const DECODE_BEHIND = 8;
+// Frames behind the scroll direction count as this many times further away
+const BEHIND_COST = 3;
+// Pinned frames are fetched as if they were never further than this from the playhead
+const PINNED_MAX_COST = 30;
+const MAX_FETCH_ATTEMPTS = 3;
+
+const release = (image: FrameImage) => {
+  if ("close" in image) image.close();
+};
+
+export class FrameSequenceLoader {
+  private readonly urls: readonly (string | null)[];
+  private readonly pinned: ReadonlySet<number>;
+  private readonly maxDecoded: number;
+  private readonly fetchConcurrency: number;
+  private readonly decodeConcurrency: number;
+
+  private readonly files = new Map<number, string>();
+  private readonly fetching = new Set<number>();
+  private readonly fetchAttempts = new Map<number, number>();
+  private readonly failed = new Set<number>();
+  private readonly decoded = new Map<number, FrameImage>();
+  private readonly decoding = new Set<number>();
+  private fetchQueue: number[] = [];
+  private decodeQueue: number[] = [];
+
+  private playhead = -1;
+  private direction: 1 | -1 = 1;
+  private readonly listeners = new Set<(index: number) => void>();
+  private readonly abort = new AbortController();
   private destroyed = false;
 
-  constructor(
-    urls: readonly string[],
-    pinnedKeyframes: readonly number[] = [0, 234, 438, 666, 886],
-    maxCacheSize = 140,
-    maxConcurrent = 6
-  ) {
+  /** `urls[i]` is frame i's file, or null for frames this loader should skip. Nothing loads until setPlayhead(). */
+  constructor(urls: readonly (string | null)[], options: LoaderOptions = {}) {
     this.urls = urls;
-    this.maxCacheSize = maxCacheSize;
-    this.maxConcurrent = maxConcurrent;
+    this.pinned = new Set((options.pinned ?? []).filter((i) => urls[i]));
+    this.maxDecoded = options.maxDecoded ?? 48;
+    this.fetchConcurrency = options.fetchConcurrency ?? 6;
+    this.decodeConcurrency = options.decodeConcurrency ?? 3;
+  }
 
-    pinnedKeyframes.forEach((idx) => {
-      if (idx >= 0 && idx < urls.length) {
-        this.pinnedIndices.add(idx);
+  /** Calls `listener` with the index of every frame that finishes decoding. */
+  subscribe(listener: (index: number) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Re-orders loading around `index`. Call it whenever the target frame changes. */
+  setPlayhead(index: number, direction: 1 | -1) {
+    const rounded = Math.round(index);
+    if (this.destroyed || (rounded === this.playhead && direction === this.direction)) return;
+    this.playhead = rounded;
+    this.direction = direction;
+
+    this.fetchQueue = [];
+    for (let i = 0; i < this.urls.length; i++) {
+      if (this.urls[i] && !this.files.has(i) && !this.fetching.has(i) && !this.failed.has(i)) {
+        this.fetchQueue.push(i);
       }
-    });
-
-    if (this.urls.length > 0) {
-      // 1. Immediately load frame 0 as permanent baseline
-      this.loadSingleFrame(0);
-
-      // 2. Queue all keyframe stopping points so they are ready before user arrives
-      for (const kf of this.pinnedIndices) {
-        if (kf !== 0 && !this.loadQueue.includes(kf)) {
-          this.loadQueue.push(kf);
-        }
-      }
-
-      // 3. Queue the initial scrub window (frames 1..15)
-      const initialBatch = Math.min(15, this.urls.length);
-      for (let i = 1; i < initialBatch; i++) {
-        if (!this.loadQueue.includes(i)) {
-          this.loadQueue.push(i);
-        }
-      }
-
-      this.processQueue();
     }
-  }
+    const fetchCost = (i: number) =>
+      this.pinned.has(i) ? Math.min(this.cost(i), PINNED_MAX_COST) : this.cost(i);
+    this.fetchQueue.sort((a, b) => fetchCost(a) - fetchCost(b));
 
-  public subscribe(callback: (index: number) => void): () => void {
-    this.onFrameReadyCallbacks.push(callback);
-    return () => {
-      this.onFrameReadyCallbacks = this.onFrameReadyCallbacks.filter(
-        (cb) => cb !== callback
-      );
-    };
-  }
-
-  public has(index: number): boolean {
-    return this.cache.has(index);
-  }
-
-  public get(index: number): HTMLImageElement | undefined {
-    const img = this.cache.get(index);
-    if (img && img.complete && img.naturalWidth > 0) {
-      // Re-insert to refresh LRU order unless pinned
-      if (!this.pinnedIndices.has(index)) {
-        this.cache.delete(index);
-        this.cache.set(index, img);
-      }
-      return img;
-    }
-    return undefined;
+    this.refreshDecodeQueue();
+    this.pumpFetch();
+    this.pumpDecode();
   }
 
   /**
-   * Returns the exact frame if ready, or the closest loaded neighbor with verified valid dimensions.
-   * Frame 0 and pinned keyframes ensure the canvas NEVER renders blank.
+   * Returns the decoded frame to draw for `target`, never stepping back past `from` (the frame on
+   * screen now): the decoded frame between the two that is closest to `target`. Returns null when
+   * nothing in that range is decoded yet, so the canvas keeps its current picture. Pass `from = -1`
+   * to take the closest decoded frame anywhere.
    */
-  public getClosestLoaded(targetIndex: number): HTMLImageElement | null {
-    // 1. Exact match
-    if (this.cache.has(targetIndex)) {
-      const exact = this.get(targetIndex);
-      if (exact) return exact;
+  getFrame(target: number, from: number): { index: number; image: FrameImage } | null {
+    const exact = this.decoded.get(target);
+    if (exact) return { index: target, image: exact };
+
+    const lo = from < 0 ? -Infinity : Math.min(from, target);
+    const hi = from < 0 ? Infinity : Math.max(from, target);
+    let best = -1;
+    for (const index of this.decoded.keys()) {
+      if (index < lo || index > hi) continue;
+      if (best === -1 || Math.abs(index - target) < Math.abs(best - target)) best = index;
     }
-
-    if (this.cache.size === 0) {
-      return null;
-    }
-
-    // 2. Nearest valid loaded neighbor in cache
-    let closestDist = Infinity;
-    let closestImg: HTMLImageElement | null = null;
-
-    for (const [idx, img] of this.cache.entries()) {
-      if (img.complete && img.naturalWidth > 0) {
-        const dist = Math.abs(idx - targetIndex);
-        if (dist < closestDist) {
-          closestDist = dist;
-          closestImg = img;
-          if (dist === 1) break; // Adjacent neighbor found
-        }
-      }
-    }
-
-    // 3. Fallback to frame 0
-    if (!closestImg && this.cache.has(0)) {
-      const f0 = this.cache.get(0);
-      if (f0 && f0.complete && f0.naturalWidth > 0) {
-        return f0;
-      }
-    }
-
-    return closestImg;
+    return best === -1 ? null : { index: best, image: this.decoded.get(best)! };
   }
 
-  /**
-   * Signals the current playback position and direction to prioritize preloading.
-   */
-  public updatePriority(currentIndex: number, direction: 1 | -1 | 0 = 0) {
+  destroy() {
+    this.destroyed = true;
+    this.abort.abort();
+    for (const image of this.decoded.values()) release(image);
+    for (const url of this.files.values()) URL.revokeObjectURL(url);
+    this.decoded.clear();
+    this.files.clear();
+    this.fetchQueue = [];
+    this.decodeQueue = [];
+    this.listeners.clear();
+  }
+
+  private cost(index: number) {
+    const offset = (index - this.playhead) * this.direction;
+    return offset >= 0 ? offset : -offset * BEHIND_COST;
+  }
+
+  private refreshDecodeQueue() {
+    const ahead = this.direction === 1 ? DECODE_AHEAD : DECODE_BEHIND;
+    const behind = this.direction === 1 ? DECODE_BEHIND : DECODE_AHEAD;
+    const wanted = (i: number) =>
+      this.files.has(i) && !this.decoded.has(i) && !this.decoding.has(i) && !this.failed.has(i);
+
+    const queue: number[] = [];
+    const lo = Math.max(0, this.playhead - behind);
+    const hi = Math.min(this.urls.length - 1, this.playhead + ahead);
+    for (let i = lo; i <= hi; i++) {
+      if (wanted(i)) queue.push(i);
+    }
+    for (const i of this.pinned) {
+      if ((i < lo || i > hi) && wanted(i)) queue.push(i);
+    }
+    this.decodeQueue = queue.sort((a, b) => this.cost(a) - this.cost(b));
+  }
+
+  private pumpFetch() {
+    while (this.fetching.size < this.fetchConcurrency && this.fetchQueue.length > 0) {
+      const index = this.fetchQueue.shift()!;
+      if (this.files.has(index) || this.fetching.has(index) || this.failed.has(index)) continue;
+      void this.fetchFrame(index);
+    }
+  }
+
+  private async fetchFrame(index: number) {
+    this.fetching.add(index);
+    try {
+      const response = await fetch(this.urls[index]!, { signal: this.abort.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      if (this.destroyed) return;
+      this.files.set(index, URL.createObjectURL(blob));
+    } catch {
+      if (this.destroyed) return;
+      const attempts = (this.fetchAttempts.get(index) ?? 0) + 1;
+      this.fetchAttempts.set(index, attempts);
+      if (attempts >= MAX_FETCH_ATTEMPTS) {
+        this.failed.add(index);
+      } else {
+        // Flaky mobile connections: try again a little later, at the back of the queue
+        setTimeout(() => {
+          if (this.destroyed) return;
+          this.fetchQueue.push(index);
+          this.pumpFetch();
+        }, 1000 * attempts);
+      }
+    } finally {
+      this.fetching.delete(index);
+    }
     if (this.destroyed) return;
-
-    const total = this.urls.length;
-    const priorityList: number[] = [];
-
-    // The current target frame has top priority
-    if (
-      !this.cache.has(currentIndex) &&
-      !this.loadingSet.has(currentIndex) &&
-      !this.failedSet.has(currentIndex)
-    ) {
-      priorityList.push(currentIndex);
-    }
-
-    // Directional preloading window: lookahead in direction of scroll
-    const aheadCount = direction === 0 ? 30 : direction === 1 ? 50 : 20;
-    const behindCount = direction === 0 ? 30 : direction === 1 ? 20 : 50;
-
-    if (direction >= 0) {
-      for (let i = 1; i <= aheadCount; i++) {
-        const idx = currentIndex + i;
-        if (
-          idx < total &&
-          !this.cache.has(idx) &&
-          !this.loadingSet.has(idx) &&
-          !this.failedSet.has(idx)
-        ) {
-          priorityList.push(idx);
-        }
-      }
-      for (let i = 1; i <= behindCount; i++) {
-        const idx = currentIndex - i;
-        if (
-          idx >= 0 &&
-          !this.cache.has(idx) &&
-          !this.loadingSet.has(idx) &&
-          !this.failedSet.has(idx)
-        ) {
-          priorityList.push(idx);
-        }
-      }
-    } else {
-      for (let i = 1; i <= behindCount; i++) {
-        const idx = currentIndex - i;
-        if (
-          idx >= 0 &&
-          !this.cache.has(idx) &&
-          !this.loadingSet.has(idx) &&
-          !this.failedSet.has(idx)
-        ) {
-          priorityList.push(idx);
-        }
-      }
-      for (let i = 1; i <= aheadCount; i++) {
-        const idx = currentIndex + i;
-        if (
-          idx < total &&
-          !this.cache.has(idx) &&
-          !this.loadingSet.has(idx) &&
-          !this.failedSet.has(idx)
-        ) {
-          priorityList.push(idx);
-        }
-      }
-    }
-
-    // Drop orphaned items outside active window except pinned keyframes
-    const windowMaxDist = Math.max(aheadCount, behindCount) + 40;
-    const filteredExistingQueue = this.loadQueue.filter((idx) => {
-      return (
-        !this.cache.has(idx) &&
-        !this.loadingSet.has(idx) &&
-        !this.failedSet.has(idx) &&
-        (this.pinnedIndices.has(idx) || Math.abs(idx - currentIndex) <= windowMaxDist)
-      );
-    });
-
-    const newPrioritySet = new Set(priorityList);
-    this.loadQueue = [
-      ...priorityList,
-      ...filteredExistingQueue.filter((idx) => !newPrioritySet.has(idx)),
-    ];
-
-    // Evict distant frames if cache exceeds limit
-    this.evictDistantFrames(currentIndex);
-
-    // Pump work
-    this.processQueue();
+    this.refreshDecodeQueue();
+    this.pumpDecode();
+    this.pumpFetch();
   }
 
-  private processQueue() {
-    if (this.destroyed) return;
-
-    while (this.activeLoads < this.maxConcurrent && this.loadQueue.length > 0) {
-      const nextIndex = this.loadQueue.shift()!;
-      if (
-        this.cache.has(nextIndex) ||
-        this.loadingSet.has(nextIndex) ||
-        this.failedSet.has(nextIndex)
-      ) {
-        continue;
-      }
-      this.loadSingleFrame(nextIndex);
+  private pumpDecode() {
+    while (this.decoding.size < this.decodeConcurrency && this.decodeQueue.length > 0) {
+      const index = this.decodeQueue.shift()!;
+      if (this.decoded.has(index) || this.decoding.has(index) || !this.files.has(index)) continue;
+      void this.decodeFrame(index);
     }
   }
 
-  private loadSingleFrame(index: number) {
-    if (index < 0 || index >= this.urls.length) return;
-    if (
-      this.cache.has(index) ||
-      this.loadingSet.has(index) ||
-      this.failedSet.has(index)
-    ) {
+  private async decodeFrame(index: number) {
+    this.decoding.add(index);
+    let image: FrameImage | null = null;
+    try {
+      const img = new Image();
+      img.src = this.files.get(index)!;
+      await img.decode();
+      image = img;
+      // An ImageBitmap stays decoded (an <img> can be silently discarded) and can be freed with close()
+      if (typeof createImageBitmap === "function") {
+        try {
+          image = await createImageBitmap(img);
+        } catch {
+          // Keep the <img>; drawImage accepts both
+        }
+      }
+    } catch {
+      if (!this.destroyed) this.failed.add(index);
+    } finally {
+      this.decoding.delete(index);
+    }
+
+    if (this.destroyed) {
+      if (image) release(image);
       return;
     }
-
-    this.loadingSet.add(index);
-    this.activeLoads++;
-
-    const img = new Image();
-    let settled = false;
-
-    const onComplete = (success: boolean) => {
-      if (settled) return;
-      settled = true;
-
-      this.loadingSet.delete(index);
-      this.activeLoads--;
-
-      if (this.destroyed) return;
-
-      if (success) {
-        this.cache.set(index, img);
-        for (const cb of this.onFrameReadyCallbacks) {
-          cb(index);
-        }
-      } else {
-        this.failedSet.add(index);
-      }
-
-      this.processQueue();
-    };
-
-    img.onload = () => {
-      if (typeof img.decode === "function") {
-        img
-          .decode()
-          .then(() => onComplete(true))
-          .catch(() => onComplete(true));
-      } else {
-        onComplete(true);
-      }
-    };
-
-    img.onerror = () => {
-      onComplete(false);
-    };
-
-    img.src = this.urls[index];
+    if (image) {
+      this.decoded.set(index, image);
+      this.evict();
+      for (const listener of this.listeners) listener(index);
+    }
+    this.pumpDecode();
   }
 
-  private evictDistantFrames(centerIndex: number) {
-    if (this.cache.size <= this.maxCacheSize) return;
-
-    // Never evict pinned keyframes
-    const entries: Array<{ index: number; dist: number }> = [];
-    for (const key of this.cache.keys()) {
-      if (this.pinnedIndices.has(key)) continue;
-      entries.push({ index: key, dist: Math.abs(key - centerIndex) });
+  /** Drops the decoded frames furthest from the playhead once over budget. Pinned frames stay. */
+  private evict() {
+    if (this.decoded.size <= this.maxDecoded) return;
+    const candidates = [...this.decoded.keys()]
+      .filter((i) => !this.pinned.has(i))
+      .sort((a, b) => this.cost(b) - this.cost(a));
+    for (const index of candidates) {
+      if (this.decoded.size <= this.maxDecoded) break;
+      release(this.decoded.get(index)!);
+      this.decoded.delete(index);
     }
-
-    entries.sort((a, b) => b.dist - a.dist);
-
-    const toRemoveCount = this.cache.size - this.maxCacheSize;
-    for (let i = 0; i < toRemoveCount && i < entries.length; i++) {
-      const idx = entries[i].index;
-      this.cache.delete(idx);
-    }
-  }
-
-  public destroy() {
-    this.destroyed = true;
-    this.loadQueue = [];
-    this.cache.clear();
-    this.loadingSet.clear();
-    this.failedSet.clear();
-    this.onFrameReadyCallbacks = [];
   }
 }

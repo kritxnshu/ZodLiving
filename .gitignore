@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# original 1920×1080 PNG frames (~1 GB); public/sequence is built from these by `npm run frames`
+/frames-source

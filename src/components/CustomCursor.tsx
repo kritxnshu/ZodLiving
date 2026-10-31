@@ -1,11 +1,28 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 interface Ripple {
   id: number;
   x: number;
   y: number;
+}
+
+// Where the cursor starts before the first mouse move: off-screen
+const HIDDEN_TRANSFORM = "translate3d(-100px, -100px, 0)";
+
+// Only shown on devices with a precise pointer, re-checked if that changes (e.g. a tablet docked to a mouse)
+function subscribeToPointer(onChange: () => void) {
+  const query = window.matchMedia("(pointer: coarse)");
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+function hasMousePointer() {
+  const isTouch =
+    window.matchMedia("(pointer: coarse)").matches ||
+    ("ontouchstart" in window && !window.matchMedia("(hover: hover)").matches);
+  return !isTouch;
 }
 
 export const CustomCursor: React.FC = () => {
@@ -19,29 +36,55 @@ export const CustomCursor: React.FC = () => {
   const targetScaleRef = useRef(1);
   const rafId = useRef<number | null>(null);
 
-  const [mounted, setMounted] = useState(false);
+  const enabled = useSyncExternalStore(subscribeToPointer, hasMousePointer, () => false);
   const [isVisible, setIsVisible] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const [isClicking, setIsClicking] = useState(false);
   const [isTextInput, setIsTextInput] = useState(false);
   const [cursorText, setCursorText] = useState<string | null>(null);
   const [ripples, setRipples] = useState<Ripple[]>([]);
 
   useEffect(() => {
-    // Only mount on desktop pointer devices
-    const isTouch =
-      typeof window !== "undefined" &&
-      (window.matchMedia("(pointer: coarse)").matches ||
-        ("ontouchstart" in window && !window.matchMedia("(hover: hover)").matches));
+    if (!enabled) return;
 
-    if (isTouch) return;
+    // Plain copies of state for the listeners, so they are registered once instead of on every hover change
+    let visible = false;
+    let hovered = false;
+    let label: string | null = null;
 
-    setMounted(true);
+    // Smooth lerp physics loop (60-120fps). Runs only while the ring is catching up with the pointer.
+    const animate = () => {
+      const ease = 0.17;
+      const dx = mousePos.current.x - ringPos.current.x;
+      const dy = mousePos.current.y - ringPos.current.y;
+      const ds = targetScaleRef.current - scaleRef.current;
+
+      // Lerp position: position += (target - position) * easing
+      ringPos.current.x += dx * ease;
+      ringPos.current.y += dy * ease;
+
+      // Lerp scale
+      scaleRef.current += ds * 0.15;
+
+      if (ringRef.current) {
+        ringRef.current.style.transform = `translate3d(${ringPos.current.x}px, ${ringPos.current.y}px, 0) scale(${scaleRef.current})`;
+      }
+
+      const settled = Math.abs(dx) < 0.1 && Math.abs(dy) < 0.1 && Math.abs(ds) < 0.001;
+      rafId.current = settled ? null : requestAnimationFrame(animate);
+    };
+
+    const startAnimating = () => {
+      if (rafId.current === null) rafId.current = requestAnimationFrame(animate);
+    };
 
     const handleMouseMove = (e: MouseEvent) => {
       mousePos.current = { x: e.clientX, y: e.clientY };
+      startAnimating();
 
-      if (!isVisible) setIsVisible(true);
+      if (!visible) {
+        visible = true;
+        setIsVisible(true);
+      }
 
       // Fast direct transform on inner dot for zero perceived latency
       if (dotRef.current) {
@@ -62,11 +105,14 @@ export const CustomCursor: React.FC = () => {
           tagName === "input" || tagName === "textarea" || interactiveEl.isContentEditable;
 
         if (isInput) {
+          hovered = false;
+          label = null;
           setIsTextInput(true);
           setIsHovered(false);
           setCursorText(null);
           targetScaleRef.current = 0.4;
         } else {
+          hovered = true;
           setIsTextInput(false);
           setIsHovered(true);
 
@@ -80,14 +126,18 @@ export const CustomCursor: React.FC = () => {
             explicitText !== "pointer" &&
             explicitText !== "hover"
           ) {
-            setCursorText(explicitText.toUpperCase());
+            label = explicitText.toUpperCase();
+            setCursorText(label);
             targetScaleRef.current = 1.9;
           } else {
+            label = null;
             setCursorText(null);
             targetScaleRef.current = 1.6;
           }
         }
       } else {
+        hovered = false;
+        label = null;
         setIsHovered(false);
         setIsTextInput(false);
         setCursorText(null);
@@ -96,8 +146,8 @@ export const CustomCursor: React.FC = () => {
     };
 
     const handleMouseDown = (e: MouseEvent) => {
-      setIsClicking(true);
-      targetScaleRef.current = isHovered ? 1.3 : 0.85;
+      targetScaleRef.current = hovered ? 1.3 : 0.85;
+      startAnimating();
 
       // Spawn click ripple
       const newRipple: Ripple = {
@@ -114,33 +164,18 @@ export const CustomCursor: React.FC = () => {
     };
 
     const handleMouseUp = () => {
-      setIsClicking(false);
-      targetScaleRef.current = isHovered ? (cursorText ? 1.9 : 1.6) : 1;
+      targetScaleRef.current = hovered ? (label ? 1.9 : 1.6) : 1;
+      startAnimating();
     };
 
     const handleMouseLeave = () => {
+      visible = false;
       setIsVisible(false);
     };
 
     const handleMouseEnter = () => {
+      visible = true;
       setIsVisible(true);
-    };
-
-    // Smooth lerp physics loop (60-120fps)
-    const animate = () => {
-      // Lerp position: position += (target - position) * easing
-      const ease = 0.17;
-      ringPos.current.x += (mousePos.current.x - ringPos.current.x) * ease;
-      ringPos.current.y += (mousePos.current.y - ringPos.current.y) * ease;
-
-      // Lerp scale
-      scaleRef.current += (targetScaleRef.current - scaleRef.current) * 0.15;
-
-      if (ringRef.current) {
-        ringRef.current.style.transform = `translate3d(${ringPos.current.x}px, ${ringPos.current.y}px, 0) scale(${scaleRef.current})`;
-      }
-
-      rafId.current = requestAnimationFrame(animate);
     };
 
     window.addEventListener("mousemove", handleMouseMove, { passive: true });
@@ -149,19 +184,18 @@ export const CustomCursor: React.FC = () => {
     document.documentElement.addEventListener("mouseleave", handleMouseLeave);
     document.documentElement.addEventListener("mouseenter", handleMouseEnter);
 
-    rafId.current = requestAnimationFrame(animate);
-
     return () => {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mousedown", handleMouseDown);
       window.removeEventListener("mouseup", handleMouseUp);
       document.documentElement.removeEventListener("mouseleave", handleMouseLeave);
       document.documentElement.removeEventListener("mouseenter", handleMouseEnter);
-      if (rafId.current) cancelAnimationFrame(rafId.current);
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current);
+      rafId.current = null;
     };
-  }, [isHovered, cursorText, isVisible]);
+  }, [enabled]);
 
-  if (!mounted) return null;
+  if (!enabled) return null;
 
   return (
     <>
@@ -178,7 +212,8 @@ export const CustomCursor: React.FC = () => {
           backgroundColor: "#D4AF37",
           boxShadow:
             "0 0 10px rgba(212, 175, 55, 0.95), 0 0 2px rgba(255, 255, 255, 0.9), 0 0 0 1px rgba(0,0,0,0.4)",
-          transform: `translate3d(${mousePos.current.x}px, ${mousePos.current.y}px, 0)`,
+          // Moved by the mouse listener directly; a constant here so re-renders never reset it
+          transform: HIDDEN_TRANSFORM,
           willChange: "transform",
         }}
       />
@@ -203,7 +238,8 @@ export const CustomCursor: React.FC = () => {
             ? "0 0 25px rgba(212, 175, 55, 0.45), inset 0 0 12px rgba(212, 175, 55, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.35)"
             : "0 0 14px rgba(212, 175, 55, 0.25), inset 0 0 6px rgba(212, 175, 55, 0.1), 0 0 0 1px rgba(0, 0, 0, 0.3)",
           backdropFilter: isHovered ? "blur(2px)" : "none",
-          transform: `translate3d(${ringPos.current.x}px, ${ringPos.current.y}px, 0) scale(${scaleRef.current})`,
+          // Moved by the animation loop directly; a constant here so re-renders never reset it
+          transform: HIDDEN_TRANSFORM,
           willChange: "transform",
           transition:
             "border 240ms ease-out, background-color 240ms ease-out, box-shadow 240ms ease-out",
